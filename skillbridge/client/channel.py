@@ -37,10 +37,10 @@ class Channel:
 
     @staticmethod
     def decode_response(response: str) -> str:
-        status, response = response.split(' ', maxsplit=1)
+        status, response = response.split(" ", maxsplit=1)
 
-        if status == 'failure':
-            if response == '<timeout>':
+        if status == "failure":
+            if response == "<timeout>":
                 raise RuntimeError(
                     "Timeout: you should restart the skill server and "
                     "increase the timeout `pyStartServer ?timeout X`.",
@@ -55,7 +55,7 @@ class DirectChannel(Channel):
         self.stdout = stdout
 
     def send(self, data: str) -> str:
-        print(data.replace('\n', '\\n'), file=self.stdout, flush=True)
+        print(data.replace("\n", "\\n"), file=self.stdout, flush=True)
         return self.decode_response(input())
 
     def close(self) -> None:
@@ -117,9 +117,9 @@ class TcpChannel(Channel):
         if len(byte) > self._max_transmission_length:
             got = len(byte)
             should = self._max_transmission_length
-            raise ValueError(f'Data exceeds max transmission length {got} > {should}')
+            raise ValueError(f"Data exceeds max transmission length {got} > {should}")
 
-        length = f'{len(byte):10}'.encode()
+        length = f"{len(byte):10}".encode()
 
         try:
             self.socket.sendall(length)
@@ -149,7 +149,7 @@ class TcpChannel(Channel):
         if not received_length_raw:
             raise RuntimeError("The server unexpectedly died")
         received_length = int(received_length_raw)
-        response = b''.join(self._receive_all(received_length)).decode()
+        response = b"".join(self._receive_all(received_length)).decode()
 
         return self.decode_response(response)
 
@@ -160,14 +160,14 @@ class TcpChannel(Channel):
     def try_repair(self) -> Exception | str:
         try:
             length = int(self.socket.recv(10))
-            message = b''.join(self._receive_all(length))
+            message = b"".join(self._receive_all(length))
         except Exception as e:  # noqa: BLE001
             return e
         return message.decode()
 
     def close(self) -> None:
         if self.connected:
-            self.socket.sendall(b'         6$close')
+            self.socket.sendall(b"         6$close")
             self.socket.close()
             self.connected = False
 
@@ -181,7 +181,7 @@ class TcpChannel(Channel):
                 break
 
 
-if platform == 'win32':
+if platform == "win32":
 
     def create_channel_class() -> type[TcpChannel]:
         class WindowsChannel(TcpChannel):
@@ -201,7 +201,7 @@ if platform == 'win32':
             @staticmethod
             def create_address(id_: Any) -> Any:
                 port = 7777 if id_ is None else id_
-                return 'localhost', port
+                return "localhost", port
 
         return WindowsChannel
 
@@ -215,7 +215,7 @@ else:
 
             @staticmethod
             def create_address(id_: Any) -> Any:
-                id_ = 'default' if id_ is None else id_
-                return f'/tmp/skill-server-{id_}.sock'
+                id_ = "default" if id_ is None else id_
+                return f"/tmp/skill-server-{id_}.sock"
 
         return UnixChannel
