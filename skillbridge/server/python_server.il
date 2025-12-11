@@ -14,8 +14,10 @@ let((_filename _baseName _moduleFolder _logDirectory _executable _unbound)
             printf("server was not running\n")
             nil
         else
+            printf("Removing pyKillServer from exit procedures and stopping skillbridge.\n")
             ipcKillProcess(pyStartServer.ipc)
             pyStartServer.ipc = nil
+            remExitProc('pyKillServer)
             t
         )
     )
@@ -194,10 +196,9 @@ let((_filename _baseName _moduleFolder _logDirectory _executable _unbound)
         )))))))
     )
 
-    putd('pyStartServer nil)
     defun(pyStartServer (@key (id "default") (logLevel "INFO") (singleMode nil) (timeout nil) (python "python") "ttggt")
         if(pyStartServer.ipc then
-            fprintf(stderr, "server is already running\n")
+            fprintf(stderr, "server is already running %s\n" pyStartServer.ipc)
             nil
         else
             let(((executableWithArgs lsprintf("%s %L %s" pyStartServer.exe id logLevel)))
@@ -208,8 +209,10 @@ let((_filename _baseName _moduleFolder _logDirectory _executable _unbound)
                     executableWithArgs = lsprintf("%s --timeout %L" executableWithArgs timeout)
                 )
                 executableWithArgs = lsprintf("\"%s\" %s" python executableWithArgs)
-
+                printf("starting server with command: %s\n" executableWithArgs)
                 pyStartServer.ipc = ipcBeginProcess(executableWithArgs "" '__pyOnData '__pyOnError '__pyOnFinish pyStartServer.logName)
+                printf( "Registering action 'pyKillServer' to be taken before the exit function is executed.\n" )
+                regExitBefore('pyKillServer)
                 t
             )
         )
@@ -229,7 +232,6 @@ let((_filename _baseName _moduleFolder _logDirectory _executable _unbound)
 
     pyRunScript.logName = lsprintf("%s/skillbridge_script.log" _logDirectory)
 
-    pyStartServer.ipc = nil
     pyStartServer.exe = _executable
 
     printf("Available commands:\n")
