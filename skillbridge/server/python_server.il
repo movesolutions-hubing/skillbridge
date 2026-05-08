@@ -70,43 +70,51 @@ let((_filename _baseName _moduleFolder _logDirectory _executable _unbound)
         )
     )
 
+    putd('__pyLog nil)
+    defun(__pyLog (message)
+        printf("[skillbridge][server] %s\n" message)
+    )
+
     putd('__pyOnData nil)
     defun(__pyOnData (id data)
         foreach(line parseString(data "\n")
-            let((result capturedWarning pythonCode)
+            let((result capturedWarning pythonCode response)
+                __pyLog(lsprintf("received command: %L" line))
+                response = "failure 'internal server error'\n"
                 capturedWarning = __pyCaptureWarnings(errset(result=evalstring(line)))
                 if((errset.errset) then
-                    printf("command %L resulted in error %L\n" line errset.errset)
-                    ipcWriteProcess(id lsprintf("failure %L\n" errset.errset))
+                    response = lsprintf("failure %L\n" errset.errset)
                 else
                     if(boundp('result) then
                         pythonCode = __pySkillToPython(result)
                         if((capturedWarning != "" && capturedWarning != "*WARNING* ") then
                             pythonCode = lsprintf("warning(%L, %s)" capturedWarning pythonCode)
                         )
-                        ipcWriteProcess(id lsprintf("success %s\n" pythonCode))
+                        response = lsprintf("success %s\n" pythonCode)
                     else
-                        ipcWriteProcess(id "success error('unbound')\n")
+                        response = "success error('unbound')\n"
                     )
                 )
+                __pyLog(lsprintf("sending response: %L" response))
+                ipcWriteProcess(id response)
             )
         )
     )
 
     putd('__pyOnError nil)
     defun(__pyOnError (_ data)
-        fprintf(stderr "PYTHON: %s\n" data)
+        __pyLog(lsprintf("python stderr: %s" data))
     )
 
     putd('__pyOnFinish nil)
     defun(__pyOnFinish (_ data)
-        printf("server was stopped with code %L\n" data)
+        __pyLog(lsprintf("server stopped with code: %L" data))
         pyStartServer.ipc = nil
     )
 
     putd('__pyOnFinishScript nil)
     defun(__pyOnFinishScript (_ data)
-        printf("script finished with code %L\n" data)
+        __pyLog(lsprintf("script finished with code: %L" data))
     )
 
 
