@@ -1,11 +1,14 @@
 import contextlib
 import warnings
 from pathlib import Path
+from socket import AF_UNIX, SO_LINGER, SOL_SOCKET, socket
+from struct import pack
+from uuid import uuid4
 
-from pytest import fixture, raises
+from pytest import fixture, mark, raises
 
 from skillbridge import Workspace, current_workspace, loop_var
-from skillbridge.client.channel import Channel, create_channel_class
+from skillbridge.client.channel import Channel, ChannelClosedError, create_channel_class
 from skillbridge.client.objects import RemoteObject
 from tests.virtuoso import Virtuoso
 
@@ -18,6 +21,44 @@ def _cleanup():
     if isinstance(path, str):
         with contextlib.suppress(FileNotFoundError):
             Path(path).unlink()
+
+
+def _create_listening_socket():
+    listener = socket(channel_class.address_family, channel_class.socket_kind)
+
+    if channel_class.address_family == AF_UNIX:
+        channel_id = f'send-exit-{uuid4().hex}'
+        address = channel_class.create_address(channel_id)
+        with contextlib.suppress(FileNotFoundError):
+            Path(address).unlink()
+        listener.bind(address)
+    else:
+        listener.bind(('localhost', 0))
+        channel_id = listener.getsockname()[1]
+        address = channel_class.create_address(channel_id)
+
+    listener.listen(1)
+    return channel_id, address, listener
+
+
+def _recv_exact(connection, size):
+    data = []
+    remaining = size
+
+    while remaining:
+        chunk = connection.recv(remaining)
+        if not chunk:
+            raise AssertionError(f'expected {size} bytes, received {size - remaining}')
+        data.append(chunk)
+        remaining -= len(chunk)
+
+    return b''.join(data)
+
+
+def _recv_frame(connection):
+    header = _recv_exact(connection, 10)
+    payload = _recv_exact(connection, int(header.decode()))
+    return header, payload
 
 
 @fixture()
@@ -36,6 +77,28 @@ def channel() -> Channel:
         yield c
     finally:
         c.close()
+
+
+@fixture
+def raw_transport():
+    channel_id, address, listener = _create_listening_socket()
+    channel = channel_class(channel_id)
+    connection, _ = listener.accept()
+    connection.settimeout(1)
+
+    try:
+        yield channel, connection, address
+    finally:
+        with contextlib.suppress(OSError):
+            connection.close()
+        with contextlib.suppress(OSError):
+            listener.close()
+        if channel.connected:
+            with contextlib.suppress(Exception):
+                channel.close()
+        if isinstance(address, str):
+            with contextlib.suppress(FileNotFoundError):
+                Path(address).unlink()
 
 
 @fixture
@@ -316,6 +379,121 @@ def test_funcall_shortcut(server, ws):
     server.answer_success('39')
     assert fun(10, 20, 30, a=1, b=2, c=3) == 39
     assert server.last_question == 'funcall(__py_testfun_123 10 20 30 ?a 1 ?b 2 ?c 3)'
+
+
+def test_send_exit_sends_framed_exit_command(raw_transport):
+    channel, connection, _ = raw_transport
+
+    channel.send_exit()
+
+    header, payload = _recv_frame(connection)
+
+    assert header == b'         6'
+    assert payload == b'exit()'
+    assert channel.connected is False
+    assert channel.socket.fileno() == -1
+
+
+def test_send_exit_on_broken_socket_does_not_reconnect(raw_transport, monkeypatch):
+    channel, connection, _ = raw_transport
+    reconnect_calls = []
+
+    def fail_reconnect():
+        reconnect_calls.append(True)
+        raise AssertionError('send_exit() should not reconnect')
+
+    monkeypatch.setattr(channel, 'reconnect', fail_reconnect)
+
+    connection.setsockopt(SOL_SOCKET, SO_LINGER, pack('ii', 1, 0))
+    connection.close()
+
+    channel.send_exit()
+
+    assert reconnect_calls == []
+    assert channel.connected is False
+    assert channel.socket.fileno() == -1
+
+
+@mark.skipif(
+    channel_class.address_family != AF_UNIX,
+    reason='Unix socket cleanup only applies to Unix domain sockets',
+)
+def test_send_exit_cleans_up_unix_socket_file(raw_transport):
+    channel, connection, address = raw_transport
+    socket_path = Path(address)
+
+    assert socket_path.exists()
+    assert socket_path.is_socket()
+
+    channel.send_exit()
+
+    assert not socket_path.exists()
+    header, payload = _recv_frame(connection)
+    assert header == b'         6'
+    assert payload == b'exit()'
+
+
+def test_send_exit_is_noop_when_disconnected(raw_transport, monkeypatch):
+    channel, connection, _ = raw_transport
+
+    channel.close()
+    header, payload = _recv_frame(connection)
+
+    assert header == b'         6'
+    assert payload == b'$close'
+
+    def fail_send(_data):
+        raise AssertionError('send_exit() should not send when disconnected')
+
+    monkeypatch.setattr(channel, '_send_no_reconnect', fail_send)
+
+    channel.send_exit()
+
+    assert channel.connected is False
+
+
+def test_send_after_close_raises_channel_closed(raw_transport, monkeypatch):
+    channel, connection, _ = raw_transport
+    reconnect_calls = []
+
+    channel.close()
+
+    header, payload = _recv_frame(connection)
+    assert header == b'         6'
+    assert payload == b'$close'
+
+    def fail_reconnect():
+        reconnect_calls.append(True)
+        raise AssertionError('closed channels must not reconnect')
+
+    monkeypatch.setattr(channel, 'reconnect', fail_reconnect)
+
+    with raises(ChannelClosedError, match='Channel has been closed'):
+        channel.send('ping')
+
+    assert reconnect_calls == []
+
+
+def test_send_after_send_exit_raises_channel_closed(raw_transport, monkeypatch):
+    channel, connection, _ = raw_transport
+    reconnect_calls = []
+
+    channel.send_exit()
+
+    header, payload = _recv_frame(connection)
+    assert header == b'         6'
+    assert payload == b'exit()'
+
+    def fail_reconnect():
+        reconnect_calls.append(True)
+        raise AssertionError('closed channels must not reconnect')
+
+    monkeypatch.setattr(channel, 'reconnect', fail_reconnect)
+
+    with raises(ChannelClosedError, match='Channel has been closed'):
+        channel.send('ping')
+
+    assert reconnect_calls == []
 
 
 def test_open_file(server, ws):

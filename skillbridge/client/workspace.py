@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import sys
 import warnings
+from contextlib import suppress
 from functools import partial
 from inspect import signature
 from logging import getLogger
 from textwrap import dedent
 from typing import Any, Callable, Iterable, NoReturn, Union, cast
 
-from .channel import Channel, DirectChannel, create_channel_class
+from .channel import Channel, ChannelClosedError, DirectChannel, create_channel_class
 from .functions import FunctionCollection, LiteralRemoteFunction
 from .globals import DirectGlobals, Globals
 from .hints import Function, Symbol
@@ -182,6 +183,7 @@ class Workspace:
     ) -> None:
         self._id = id_
         self._channel = channel
+        self._closed = False
         self._translator = translator or self._prepare_default_translator()
         self._max_transmission_length = 1_000_000
         self.__ = DirectGlobals(channel, self._translator)
@@ -213,19 +215,27 @@ class Workspace:
         return v
 
     def globals(self, prefix: str) -> Globals:
+        self._check_closed()
         return Globals(self._channel, self._translator, prefix)
 
     def __getitem__(self, item: str) -> LiteralRemoteFunction:
+        self._check_closed()
         return LiteralRemoteFunction(self._channel, item, self._translator)
+
+    def _check_closed(self) -> None:
+        if self._closed:
+            raise ChannelClosedError("Workspace has been closed")
 
     @property
     def id(self) -> WorkspaceId:
         return self._id
 
     def flush(self) -> None:
+        self._check_closed()
         self._channel.flush()
 
     def define(self, name: str, args: Iterable[str], code: str) -> None:
+        self._check_closed()
         code = code.replace('\n', ' ')
         skill_name = snake_to_camel(name)
         skill_name = skill_name[0].upper() + skill_name[1:]
@@ -262,17 +272,40 @@ class Workspace:
         return _open_workspaces[workspace_id]
 
     def close(self, log_exception: bool = True) -> None:
+        if self._closed:
+            return
+
         try:
             self._channel.close()
         except:  # noqa: E722
             if log_exception:
                 logger.exception("Failed to close workspace")
 
+        self._closed = True
         _open_workspaces.pop(self.id, None)
 
         if current_workspace.id == self.id:
             current_workspace.__class__ = cast('type[Workspace]', _NoWorkspace)
             current_workspace.__dict__ = {}
+
+    def exit(self) -> None:
+        """Send exit() to Virtuoso and close the workspace.
+
+        Best-effort: sends exit() without waiting for a response (the server
+        dies upon processing it), closes the socket directly, and cleans up
+        the Unix socket file.  Never raises.
+        """
+        if self._closed:
+            return
+
+        with suppress(Exception):
+            self._channel.send_exit()
+
+        # Delegate remaining cleanup (setting _closed, clearing
+        # _open_workspaces, resetting current_workspace) to close().
+        # After send_exit(), channel.connected is False, so
+        # channel.close() inside close() is a harmless no-op.
+        self.close(log_exception=False)
 
     @property
     def max_transmission_length(self) -> int:
@@ -335,9 +368,11 @@ class Workspace:
         return self._build_function(function)
 
     def try_repair(self) -> Any:
+        self._check_closed()
         return self._channel.try_repair()
 
     def make_current(self) -> Workspace:
+        self._check_closed()
         current_workspace.__class__ = Workspace
         current_workspace.__dict__ = self.__dict__
         return self

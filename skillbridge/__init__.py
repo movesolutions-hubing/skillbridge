@@ -8,6 +8,7 @@ from re import fullmatch, sub
 from sys import executable, version_info
 from typing import Any
 
+from .client.channel import ChannelClosedError
 from .client.functions import FunctionCollection, keys
 from .client.globals import Globals, GlobalVar
 from .client.hints import Function, Key, SkillCode, SkillList, SkillTuple, Symbol
@@ -17,6 +18,7 @@ from .client.var import Var
 from .client.workspace import Workspace, current_workspace
 
 __all__ = [
+    'ChannelClosedError',
     'Function',
     'GlobalVar',
     'Globals',
