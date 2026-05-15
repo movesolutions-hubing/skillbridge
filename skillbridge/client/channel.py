@@ -7,9 +7,21 @@ from sys import platform
 from typing import Any, Iterable, TextIO
 
 
+class ChannelClosedError(RuntimeError):
+    """Raised when an operation is attempted on a closed channel."""
+
+
 class Channel:
     def __init__(self, max_transmission_length: int) -> None:
         self._max_transmission_length = max_transmission_length
+        self._closed = False
+
+    def _check_closed(self) -> None:
+        if self._closed:
+            raise ChannelClosedError("Channel has been closed")
+
+    def _mark_closed(self) -> None:
+        self._closed = True
 
     def send(self, data: str) -> str:
         raise NotImplementedError  # pragma: no cover
@@ -17,8 +29,14 @@ class Channel:
     def close(self) -> None:
         raise NotImplementedError  # pragma: no cover
 
+    def send_exit(self) -> None:
+        raise NotImplementedError  # pragma: no cover
+
     def flush(self) -> None:
         raise NotImplementedError  # pragma: no cover
+
+    def _cleanup_socket_file(self) -> None:
+        """Remove platform-specific socket files. Override in subclasses."""
 
     def try_repair(self) -> Any:
         raise NotImplementedError  # pragma: no cover
@@ -55,11 +73,15 @@ class DirectChannel(Channel):
         self.stdout = stdout
 
     def send(self, data: str) -> str:
+        self._check_closed()
         print(data.replace("\n", "\\n"), file=self.stdout, flush=True)
         return self.decode_response(input())
 
     def close(self) -> None:
-        pass
+        self._mark_closed()
+
+    def send_exit(self) -> None:
+        self._mark_closed()
 
     def flush(self) -> None:
         pass
@@ -136,6 +158,19 @@ class TcpChannel(Channel):
             self.socket.sendall(length)
             self.socket.sendall(byte)
 
+    def _send_no_reconnect(self, data: str) -> None:
+        byte = data.encode()
+
+        if len(byte) > self._max_transmission_length:
+            got = len(byte)
+            should = self._max_transmission_length
+            raise ValueError(f"Data exceeds max transmission length {got} > {should}")
+
+        length = f"{len(byte):10}".encode()
+
+        self.socket.sendall(length)
+        self.socket.sendall(byte)
+
     def _receive_only(self) -> str:
         try:
             received_length_raw = self.socket.recv(10)
@@ -154,6 +189,7 @@ class TcpChannel(Channel):
         return self.decode_response(response)
 
     def send(self, data: str) -> str:
+        self._check_closed()
         self._send_only(data)
         return self._receive_only()
 
@@ -166,10 +202,39 @@ class TcpChannel(Channel):
         return message.decode()
 
     def close(self) -> None:
-        if self.connected:
+        if self._closed:
+            return
+
+        self._mark_closed()
+        if not self.connected:
+            return
+
+        self.connected = False
+        try:
             self.socket.sendall(b"         6$close")
+        finally:
             self.socket.close()
-            self.connected = False
+
+    def send_exit(self) -> None:
+        """Send ``exit()`` to the server and tear down the socket.
+
+        Does NOT use :meth:`close` on purpose: ``close()`` sends the
+        ``$close`` protocol message (server stays alive), whereas
+        ``send_exit()`` sends the SKILL ``exit()`` command (server dies).
+        Sending ``$close`` after ``exit()`` would hit a dying process.
+        """
+        if self._closed:
+            return
+
+        self._mark_closed()
+        if not self.connected:
+            return
+        with suppress(BrokenPipeError, OSError):
+            self._send_no_reconnect("exit()")
+        with suppress(OSError):
+            self.socket.close()
+        self.connected = False
+        self._cleanup_socket_file()
 
     def flush(self) -> None:
         while True:
@@ -217,5 +282,13 @@ else:
             def create_address(id_: Any) -> Any:
                 id_ = "default" if id_ is None else id_
                 return f"/tmp/skill-server-{id_}.sock"
+
+            def _cleanup_socket_file(self) -> None:
+                from pathlib import Path  # noqa: PLC0415
+
+                sock_path = Path(self.address)
+                if sock_path.parent.resolve() == Path("/tmp").resolve() and sock_path.is_socket():
+                    with suppress(OSError):
+                        sock_path.unlink()
 
         return UnixChannel

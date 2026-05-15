@@ -49,6 +49,9 @@ class DummyChannel(Channel):
     def close(self) -> None:
         pass
 
+    def send_exit(self) -> None:
+        pass
+
     def flush(self) -> None:
         pass
 
