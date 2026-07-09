@@ -71,15 +71,17 @@ let((_filename _baseName _moduleFolder _logDirectory _executable _unbound)
     )
 
     putd('__pyLog nil)
-    defun(__pyLog (message)
-        printf("[skillbridge][server] %s\n" message)
+    defun(__pyLog (message @key (level "INFO"))
+        if(or(level != "DEBUG" pyStartServer.logLevel == "DEBUG") then
+            printf("[DEBUG] [skillbridge/server] %s\n" message)
+        )
     )
-
+ 
     putd('__pyOnData nil)
     defun(__pyOnData (id data)
         foreach(line parseString(data "\n")
             let((result capturedWarning pythonCode response)
-                __pyLog(lsprintf("received command: %L" line))
+                __pyLog(lsprintf("received command: %L" line) ?level "DEBUG")
                 response = "failure 'internal server error'\n"
                 capturedWarning = __pyCaptureWarnings(errset(result=evalstring(line)))
                 if((errset.errset) then
@@ -95,7 +97,7 @@ let((_filename _baseName _moduleFolder _logDirectory _executable _unbound)
                         response = "success error('unbound')\n"
                     )
                 )
-                __pyLog(lsprintf("sending response: %L" response))
+                __pyLog(lsprintf("sending response: %L" response) ?level "DEBUG")
                 ipcWriteProcess(id response)
             )
         )
@@ -209,6 +211,7 @@ let((_filename _baseName _moduleFolder _logDirectory _executable _unbound)
             fprintf(stderr, "server is already running %s\n" pyStartServer.ipc)
             nil
         else
+            pyStartServer.logLevel = logLevel
             let(((executableWithArgs lsprintf("%s %L %s" pyStartServer.exe id logLevel)))
                 if(singleMode then
                     executableWithArgs = lsprintf("%s --single" executableWithArgs)
